@@ -1,5 +1,5 @@
 """
-Meta (Facebook/Instagram) Lead Ads -> Google Sheets
+Meta (Facebook/Instagram) Lead Ads -> Google Sheets (Apps Script orqali)
 
 Ishlash tartibi:
 1. Foydalanuvchi Meta reklamasidagi lead formasini to'ldiradi.
@@ -7,7 +7,8 @@ Ishlash tartibi:
    (xabarda faqat leadgen_id bo'ladi, to'liq ma'lumot bo'lmaydi).
 3. Biz shu leadgen_id bilan Meta Graph API'dan lead'ning to'liq ma'lumotini
    (ism, telefon, email va h.k.) so'rab olamiz.
-4. Google Sheets'ga yangi qator sifatida yozamiz.
+4. Ma'lumotni Google Apps Script web app manziliga POST qilamiz, u esa
+   Google Sheets'ga yangi qator sifatida yozadi.
 
 Ishga tushirishdan oldin: .env faylini to'ldiring va README.md'ni o'qing.
 """
@@ -20,18 +21,17 @@ import requests
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 
-from sheets import append_lead_row
-
 load_dotenv()
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("leads-bot")
 
-# --- Sozlamalar (.env fayldan olinadi) ---
-VERIFY_TOKEN = os.environ["META_VERIFY_TOKEN"]          # webhook tasdiqlash uchun o'zingiz o'ylab topgan so'z
+# --- Sozlamalar (.env fayldan yoki Render Environment Variables'dan olinadi) ---
+VERIFY_TOKEN = os.environ["META_VERIFY_TOKEN"]            # webhook tasdiqlash uchun o'zingiz o'ylab topgan so'z
 PAGE_ACCESS_TOKEN = os.environ["META_PAGE_ACCESS_TOKEN"]  # Meta Business'dan olinadigan token
 GRAPH_API_VERSION = os.environ.get("META_GRAPH_API_VERSION", "v21.0")
+GOOGLE_SCRIPT_URL = os.environ["GOOGLE_SCRIPT_URL"]       # Apps Script web app manzili (.../exec)
 
 
 @app.route("/webhook", methods=["GET"])
@@ -64,7 +64,6 @@ def receive_webhook():
                 value = change.get("value", {})
                 leadgen_id = value.get("leadgen_id")
                 form_id = value.get("form_id")
-                page_id = value.get("page_id")
                 ad_id = value.get("ad_id")
 
                 if not leadgen_id:
@@ -72,7 +71,7 @@ def receive_webhook():
                     continue
 
                 lead_data = fetch_lead_details(leadgen_id)
-                save_lead(lead_data, form_id=form_id, page_id=page_id, ad_id=ad_id)
+                save_lead(lead_data, form_id=form_id, ad_id=ad_id)
 
     except Exception:
         logger.exception("Webhook'ni qayta ishlashda xatolik yuz berdi.")
@@ -109,21 +108,23 @@ def fetch_lead_details(leadgen_id: str) -> dict:
     }
 
 
-def save_lead(lead_data: dict, form_id=None, page_id=None, ad_id=None):
-    """Lead ma'lumotini Google Sheets'ga qator sifatida qo'shadi."""
+def save_lead(lead_data: dict, form_id=None, ad_id=None):
+    """Lead ma'lumotini Google Apps Script orqali Google Sheets'ga yozadi."""
     fields = lead_data.get("fields", {})
-    row = [
-        datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
-        lead_data.get("leadgen_id", ""),
-        fields.get("full_name", ""),
-        fields.get("phone_number", ""),
-        fields.get("email", ""),
-        form_id or "",
-        ad_id or "",
-        lead_data.get("campaign_id", ""),
-    ]
-    append_lead_row(row)
-    logger.info("Yangi lead Google Sheets'ga yozildi: %s", row)
+    payload = {
+        "vaqt": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+        "leadgen_id": lead_data.get("leadgen_id", ""),
+        "full_name": fields.get("full_name", ""),
+        "phone_number": fields.get("phone_number", ""),
+        "email": fields.get("email", ""),
+        "form_id": form_id or "",
+        "ad_id": ad_id or "",
+        "campaign_id": lead_data.get("campaign_id", ""),
+    }
+
+    response = requests.post(GOOGLE_SCRIPT_URL, json=payload, timeout=10)
+    response.raise_for_status()
+    logger.info("Yangi lead Google Sheets'ga yozildi: %s", payload)
 
 
 if __name__ == "__main__":
